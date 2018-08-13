@@ -44,20 +44,20 @@ func RandomString(strlen int) string {
 }
 
 func client() *Client {
-	return New(crmUrl, os.Getenv("RETAILCRM_KEY"))
+	return New(crmUrl, os.Getenv("RETAILCRM_KEY"), true)
 }
 
 func badurlclient() *Client {
-	return New(badUrl, os.Getenv("RETAILCRM_KEY"))
+	return New(badUrl, os.Getenv("RETAILCRM_KEY"), true)
 }
 
 func badkeyclient() *Client {
-	return New(os.Getenv("RETAILCRM_URL"), "1234567890")
+	return New(os.Getenv("RETAILCRM_URL"), "1234567890", true)
 }
 
 func TestGetRequest(t *testing.T) {
 	c := client()
-	_, status, _ := c.GetRequest("/fake-method")
+	_, status, _ := c.GetRequest("/fake-method", b)
 
 	if status != http.StatusNotFound {
 		t.Fail()

@@ -7,6 +7,7 @@ type Client struct {
 	URL        string
 	Key        string
 	httpClient *http.Client
+	Debug      bool
 }
 
 // Pagination type

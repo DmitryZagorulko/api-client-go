@@ -1,9 +1,11 @@
 package v5
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
+	"log"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -14,21 +16,29 @@ import (
 	"github.com/retailcrm/api-client-go/errs"
 )
 
+var (
+	prefix = "/api/v5"
+	b      []byte
+)
+
 // New initalize client
-func New(url string, key string) *Client {
+func New(url string, key string, debug ...bool) *Client {
+	d := false
+
+	if len(debug) > 0 {
+		d = debug[0]
+	}
+
 	return &Client{
 		url,
 		key,
 		&http.Client{Timeout: 20 * time.Second},
+		d,
 	}
 }
 
 // GetRequest implements GET Request
-func (c *Client) GetRequest(urlWithParameters string, versioned ...bool) ([]byte, int, errs.Failure) {
-	var res []byte
-	var cerr errs.Failure
-	var prefix = "/api/v5"
-
+func (c *Client) GetRequest(url string, parameters []byte, versioned ...bool) ([]byte, int, errs.Failure) {
 	if len(versioned) > 0 {
 		s := versioned[0]
 
@@ -37,13 +47,31 @@ func (c *Client) GetRequest(urlWithParameters string, versioned ...bool) ([]byte
 		}
 	}
 
-	req, err := http.NewRequest("GET", fmt.Sprintf("%s%s%s", c.URL, prefix, urlWithParameters), nil)
+	return makeRequest(
+		"GET",
+		fmt.Sprintf("%s%s%s", c.URL, prefix, url),
+		bytes.NewBuffer(parameters),
+		c,
+	)
+}
+
+func makeRequest(reqType, url string, buf *bytes.Buffer, c *Client) ([]byte, int, errs.Failure) {
+	var res []byte
+	var cerr errs.Failure
+	prefix = "/api/v5"
+
+	req, err := http.NewRequest(reqType, url, buf)
 	if err != nil {
 		cerr.RuntimeErr = err
 		return res, 0, cerr
 	}
 
+	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-API-KEY", c.Key)
+
+	if c.Debug {
+		log.Printf("MG BOT API Request: %s %s %s %s", reqType, url, c.Key, buf.String())
+	}
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
@@ -52,13 +80,17 @@ func (c *Client) GetRequest(urlWithParameters string, versioned ...bool) ([]byte
 	}
 
 	if resp.StatusCode >= http.StatusInternalServerError {
-		cerr.ApiErr = fmt.Sprintf("HTTP request error. Status code: %d.\n", resp.StatusCode)
+		cerr.ApiErr = fmt.Sprintf("http request error. Status code: %d", resp.StatusCode)
 		return res, resp.StatusCode, cerr
 	}
 
 	res, err = buildRawResponse(resp)
 	if err != nil {
 		cerr.RuntimeErr = err
+	}
+
+	if c.Debug {
+		log.Printf("MG BOT API Response: %s", res)
 	}
 
 	return res, resp.StatusCode, cerr
@@ -170,7 +202,7 @@ func fillSite(p *url.Values, site []string) {
 func (c *Client) APIVersions() (VersionResponse, int, errs.Failure) {
 	var resp VersionResponse
 
-	data, status, err := c.GetRequest("/api-versions", false)
+	data, status, err := c.GetRequest("/api-versions", b, false)
 	if err.RuntimeErr != nil {
 		return resp, status, err
 	}
@@ -208,7 +240,7 @@ func (c *Client) APIVersions() (VersionResponse, int, errs.Failure) {
 func (c *Client) APICredentials() (CredentialResponse, int, errs.Failure) {
 	var resp CredentialResponse
 
-	data, status, err := c.GetRequest("/credentials", false)
+	data, status, err := c.GetRequest("/credentials", b, false)
 	if err.RuntimeErr != nil {
 		return resp, status, err
 	}
@@ -250,10 +282,9 @@ func (c *Client) APICredentials() (CredentialResponse, int, errs.Failure) {
 // 	}
 func (c *Client) Customers(parameters CustomersRequest) (CustomersResponse, int, errs.Failure) {
 	var resp CustomersResponse
+	outgoing, _ := query.Values(parameters)
 
-	params, _ := query.Values(parameters)
-
-	data, status, err := c.GetRequest(fmt.Sprintf("/customers?%s", params.Encode()))
+	data, status, err := c.GetRequest(fmt.Sprintf("/customers?%s", outgoing.Encode()), b)
 	if err.RuntimeErr != nil {
 		return resp, status, err
 	}
@@ -438,7 +469,7 @@ func (c *Client) CustomersHistory(parameters CustomersHistoryRequest) (Customers
 
 	params, _ := query.Values(parameters)
 
-	data, status, err := c.GetRequest(fmt.Sprintf("/customers/history?%s", params.Encode()))
+	data, status, err := c.GetRequest(fmt.Sprintf("/customers/history?%s", params.Encode()), b)
 	if err.RuntimeErr != nil {
 		return resp, status, err
 	}
@@ -483,7 +514,7 @@ func (c *Client) CustomerNotes(parameters NotesRequest) (NotesResponse, int, err
 
 	params, _ := query.Values(parameters)
 
-	data, status, err := c.GetRequest(fmt.Sprintf("/customers/notes?%s", params.Encode()))
+	data, status, err := c.GetRequest(fmt.Sprintf("/customers/notes?%s", params.Encode()), b)
 	if err.RuntimeErr != nil {
 		return resp, status, err
 	}
@@ -676,7 +707,7 @@ func (c *Client) Customer(id, by, site string) (CustomerResponse, int, errs.Fail
 	fw := CustomerRequest{context, site}
 	params, _ := query.Values(fw)
 
-	data, status, err := c.GetRequest(fmt.Sprintf("/customers/%s?%s", id, params.Encode()))
+	data, status, err := c.GetRequest(fmt.Sprintf("/customers/%s?%s", id, params.Encode()), b)
 	if err.RuntimeErr != nil {
 		return resp, status, err
 	}
@@ -836,7 +867,7 @@ func (c *Client) DeliveryShipments(parameters DeliveryShipmentsRequest) (Deliver
 
 	params, _ := query.Values(parameters)
 
-	data, status, err := c.GetRequest(fmt.Sprintf("/delivery/shipments?%s", params.Encode()))
+	data, status, err := c.GetRequest(fmt.Sprintf("/delivery/shipments?%s", params.Encode()), b)
 	if err.RuntimeErr != nil {
 		return resp, status, err
 	}
@@ -930,7 +961,7 @@ func (c *Client) DeliveryShipmentCreate(shipment DeliveryShipment, deliveryType 
 func (c *Client) DeliveryShipment(id int) (DeliveryShipmentResponse, int, errs.Failure) {
 	var resp DeliveryShipmentResponse
 
-	data, status, err := c.GetRequest(fmt.Sprintf("/delivery/shipments/%d", id))
+	data, status, err := c.GetRequest(fmt.Sprintf("/delivery/shipments/%d", id), b)
 	if err.RuntimeErr != nil {
 		return resp, status, err
 	}
@@ -1015,7 +1046,7 @@ func (c *Client) DeliveryShipmentEdit(shipment DeliveryShipment, site ...string)
 func (c *Client) IntegrationModule(code string) (IntegrationModuleResponse, int, errs.Failure) {
 	var resp IntegrationModuleResponse
 
-	data, status, err := c.GetRequest(fmt.Sprintf("/integration-modules/%s", code))
+	data, status, err := c.GetRequest(fmt.Sprintf("/integration-modules/%s", code), b)
 	if err.RuntimeErr != nil {
 		return resp, status, err
 	}
@@ -1108,7 +1139,7 @@ func (c *Client) Orders(parameters OrdersRequest) (OrdersResponse, int, errs.Fai
 
 	params, _ := query.Values(parameters)
 
-	data, status, err := c.GetRequest(fmt.Sprintf("/orders?%s", params.Encode()))
+	data, status, err := c.GetRequest(fmt.Sprintf("/orders?%s", params.Encode()), b)
 	if err.RuntimeErr != nil {
 		return resp, status, err
 	}
@@ -1289,7 +1320,7 @@ func (c *Client) OrdersHistory(parameters OrdersHistoryRequest) (CustomersHistor
 
 	params, _ := query.Values(parameters)
 
-	data, status, err := c.GetRequest(fmt.Sprintf("/orders/history?%s", params.Encode()))
+	data, status, err := c.GetRequest(fmt.Sprintf("/orders/history?%s", params.Encode()), b)
 	if err.RuntimeErr != nil {
 		return resp, status, err
 	}
@@ -1536,7 +1567,7 @@ func (c *Client) Order(id, by, site string) (OrderResponse, int, errs.Failure) {
 	fw := OrderRequest{context, site}
 	params, _ := query.Values(fw)
 
-	data, status, err := c.GetRequest(fmt.Sprintf("/orders/%s?%s", id, params.Encode()))
+	data, status, err := c.GetRequest(fmt.Sprintf("/orders/%s?%s", id, params.Encode()), b)
 	if err.RuntimeErr != nil {
 		return resp, status, err
 	}
@@ -1631,7 +1662,7 @@ func (c *Client) Packs(parameters PacksRequest) (PacksResponse, int, errs.Failur
 
 	params, _ := query.Values(parameters)
 
-	data, status, err := c.GetRequest(fmt.Sprintf("/orders/packs?%s", params.Encode()))
+	data, status, err := c.GetRequest(fmt.Sprintf("/orders/packs?%s", params.Encode()), b)
 	if err.RuntimeErr != nil {
 		return resp, status, err
 	}
@@ -1718,7 +1749,7 @@ func (c *Client) PacksHistory(parameters PacksHistoryRequest) (PacksHistoryRespo
 
 	params, _ := query.Values(parameters)
 
-	data, status, err := c.GetRequest(fmt.Sprintf("/orders/packs/history?%s", params.Encode()))
+	data, status, err := c.GetRequest(fmt.Sprintf("/orders/packs/history?%s", params.Encode()), b)
 	if err.RuntimeErr != nil {
 		return resp, status, err
 	}
@@ -1755,7 +1786,7 @@ func (c *Client) PacksHistory(parameters PacksHistoryRequest) (PacksHistoryRespo
 func (c *Client) Pack(id int) (PackResponse, int, errs.Failure) {
 	var resp PackResponse
 
-	data, status, err := c.GetRequest(fmt.Sprintf("/orders/packs/%d", id))
+	data, status, err := c.GetRequest(fmt.Sprintf("/orders/packs/%d", id), b)
 	if err.RuntimeErr != nil {
 		return resp, status, err
 	}
@@ -1849,7 +1880,7 @@ func (c *Client) PackEdit(pack Pack) (CreateResponse, int, errs.Failure) {
 func (c *Client) Countries() (CountriesResponse, int, errs.Failure) {
 	var resp CountriesResponse
 
-	data, status, err := c.GetRequest("/reference/countries")
+	data, status, err := c.GetRequest("/reference/countries", b)
 	if err.RuntimeErr != nil {
 		return resp, status, err
 	}
@@ -1869,7 +1900,7 @@ func (c *Client) Countries() (CountriesResponse, int, errs.Failure) {
 func (c *Client) CostGroups() (CostGroupsResponse, int, errs.Failure) {
 	var resp CostGroupsResponse
 
-	data, status, err := c.GetRequest("/reference/cost-groups")
+	data, status, err := c.GetRequest("/reference/cost-groups", b)
 	if err.RuntimeErr != nil {
 		return resp, status, err
 	}
@@ -1932,7 +1963,7 @@ func (c *Client) CostGroupEdit(costGroup CostGroup) (SuccessfulResponse, int, er
 func (c *Client) CostItems() (CostItemsResponse, int, errs.Failure) {
 	var resp CostItemsResponse
 
-	data, status, err := c.GetRequest("/reference/cost-items")
+	data, status, err := c.GetRequest("/reference/cost-items", b)
 	if err.RuntimeErr != nil {
 		return resp, status, err
 	}
@@ -1995,7 +2026,7 @@ func (c *Client) CostItemEdit(costItem CostItem) (SuccessfulResponse, int, errs.
 func (c *Client) Couriers() (CouriersResponse, int, errs.Failure) {
 	var resp CouriersResponse
 
-	data, status, err := c.GetRequest("/reference/couriers")
+	data, status, err := c.GetRequest("/reference/couriers", b)
 	if err.RuntimeErr != nil {
 		return resp, status, err
 	}
@@ -2107,7 +2138,7 @@ func (c *Client) CourierEdit(courier Courier) (SuccessfulResponse, int, errs.Fai
 func (c *Client) DeliveryServices() (DeliveryServiceResponse, int, errs.Failure) {
 	var resp DeliveryServiceResponse
 
-	data, status, err := c.GetRequest("/reference/delivery-services")
+	data, status, err := c.GetRequest("/reference/delivery-services", b)
 	if err.RuntimeErr != nil {
 		return resp, status, err
 	}
@@ -2170,7 +2201,7 @@ func (c *Client) DeliveryServiceEdit(deliveryService DeliveryService) (Successfu
 func (c *Client) DeliveryTypes() (DeliveryTypesResponse, int, errs.Failure) {
 	var resp DeliveryTypesResponse
 
-	data, status, err := c.GetRequest("/reference/delivery-types")
+	data, status, err := c.GetRequest("/reference/delivery-types", b)
 	if err.RuntimeErr != nil {
 		return resp, status, err
 	}
@@ -2235,7 +2266,7 @@ func (c *Client) DeliveryTypeEdit(deliveryType DeliveryType) (SuccessfulResponse
 func (c *Client) LegalEntities() (LegalEntitiesResponse, int, errs.Failure) {
 	var resp LegalEntitiesResponse
 
-	data, status, err := c.GetRequest("/reference/legal-entities")
+	data, status, err := c.GetRequest("/reference/legal-entities", b)
 	if err.RuntimeErr != nil {
 		return resp, status, err
 	}
@@ -2298,7 +2329,7 @@ func (c *Client) LegalEntityEdit(legalEntity LegalEntity) (SuccessfulResponse, i
 func (c *Client) OrderMethods() (OrderMethodsResponse, int, errs.Failure) {
 	var resp OrderMethodsResponse
 
-	data, status, err := c.GetRequest("/reference/order-methods")
+	data, status, err := c.GetRequest("/reference/order-methods", b)
 	if err.RuntimeErr != nil {
 		return resp, status, err
 	}
@@ -2362,7 +2393,7 @@ func (c *Client) OrderMethodEdit(orderMethod OrderMethod) (SuccessfulResponse, i
 func (c *Client) OrderTypes() (OrderTypesResponse, int, errs.Failure) {
 	var resp OrderTypesResponse
 
-	data, status, err := c.GetRequest("/reference/order-types")
+	data, status, err := c.GetRequest("/reference/order-types", b)
 	if err.RuntimeErr != nil {
 		return resp, status, err
 	}
@@ -2425,7 +2456,7 @@ func (c *Client) OrderTypeEdit(orderType OrderType) (SuccessfulResponse, int, er
 func (c *Client) PaymentStatuses() (PaymentStatusesResponse, int, errs.Failure) {
 	var resp PaymentStatusesResponse
 
-	data, status, err := c.GetRequest("/reference/payment-statuses")
+	data, status, err := c.GetRequest("/reference/payment-statuses", b)
 	if err.RuntimeErr != nil {
 		return resp, status, err
 	}
@@ -2471,7 +2502,7 @@ func (c *Client) PaymentStatusEdit(paymentStatus PaymentStatus) (SuccessfulRespo
 func (c *Client) PaymentTypes() (PaymentTypesResponse, int, errs.Failure) {
 	var resp PaymentTypesResponse
 
-	data, status, err := c.GetRequest("/reference/payment-types")
+	data, status, err := c.GetRequest("/reference/payment-types", b)
 	if err.RuntimeErr != nil {
 		return resp, status, err
 	}
@@ -2517,7 +2548,7 @@ func (c *Client) PaymentTypeEdit(paymentType PaymentType) (SuccessfulResponse, i
 func (c *Client) PriceTypes() (PriceTypesResponse, int, errs.Failure) {
 	var resp PriceTypesResponse
 
-	data, status, err := c.GetRequest("/reference/price-types")
+	data, status, err := c.GetRequest("/reference/price-types", b)
 	if err.RuntimeErr != nil {
 		return resp, status, err
 	}
@@ -2563,7 +2594,7 @@ func (c *Client) PriceTypeEdit(priceType PriceType) (SuccessfulResponse, int, er
 func (c *Client) ProductStatuses() (ProductStatusesResponse, int, errs.Failure) {
 	var resp ProductStatusesResponse
 
-	data, status, err := c.GetRequest("/reference/product-statuses")
+	data, status, err := c.GetRequest("/reference/product-statuses", b)
 	if err.RuntimeErr != nil {
 		return resp, status, err
 	}
@@ -2609,7 +2640,7 @@ func (c *Client) ProductStatusEdit(productStatus ProductStatus) (SuccessfulRespo
 func (c *Client) Sites() (SitesResponse, int, errs.Failure) {
 	var resp SitesResponse
 
-	data, status, err := c.GetRequest("/reference/sites")
+	data, status, err := c.GetRequest("/reference/sites", b)
 	if err.RuntimeErr != nil {
 		return resp, status, err
 	}
@@ -2655,7 +2686,7 @@ func (c *Client) SiteEdit(site Site) (SuccessfulResponse, int, errs.Failure) {
 func (c *Client) StatusGroups() (StatusGroupsResponse, int, errs.Failure) {
 	var resp StatusGroupsResponse
 
-	data, status, err := c.GetRequest("/reference/status-groups")
+	data, status, err := c.GetRequest("/reference/status-groups", b)
 	if err.RuntimeErr != nil {
 		return resp, status, err
 	}
@@ -2675,7 +2706,7 @@ func (c *Client) StatusGroups() (StatusGroupsResponse, int, errs.Failure) {
 func (c *Client) Statuses() (StatusesResponse, int, errs.Failure) {
 	var resp StatusesResponse
 
-	data, status, err := c.GetRequest("/reference/statuses")
+	data, status, err := c.GetRequest("/reference/statuses", b)
 	if err.RuntimeErr != nil {
 		return resp, status, err
 	}
@@ -2721,7 +2752,7 @@ func (c *Client) StatusEdit(st Status) (SuccessfulResponse, int, errs.Failure) {
 func (c *Client) Stores() (StoresResponse, int, errs.Failure) {
 	var resp StoresResponse
 
-	data, status, err := c.GetRequest("/reference/stores")
+	data, status, err := c.GetRequest("/reference/stores", b)
 	if err.RuntimeErr != nil {
 		return resp, status, err
 	}
@@ -2791,7 +2822,7 @@ func (c *Client) Segments(parameters SegmentsRequest) (SegmentsResponse, int, er
 
 	params, _ := query.Values(parameters)
 
-	data, status, err := c.GetRequest(fmt.Sprintf("/segments?%s", params.Encode()))
+	data, status, err := c.GetRequest(fmt.Sprintf("/segments?%s", params.Encode()), b)
 	if err.RuntimeErr != nil {
 		return resp, status, err
 	}
@@ -2831,7 +2862,7 @@ func (c *Client) Inventories(parameters InventoriesRequest) (InventoriesResponse
 
 	params, _ := query.Values(parameters)
 
-	data, status, err := c.GetRequest(fmt.Sprintf("/store/inventories?%s", params.Encode()))
+	data, status, err := c.GetRequest(fmt.Sprintf("/store/inventories?%s", params.Encode()), b)
 	if err.RuntimeErr != nil {
 		return resp, status, err
 	}
@@ -2991,7 +3022,7 @@ func (c *Client) ProductsGroup(parameters ProductsGroupsRequest) (ProductsGroups
 
 	params, _ := query.Values(parameters)
 
-	data, status, err := c.GetRequest(fmt.Sprintf("/store/product-groups?%s", params.Encode()))
+	data, status, err := c.GetRequest(fmt.Sprintf("/store/product-groups?%s", params.Encode()), b)
 	if err.RuntimeErr != nil {
 		return resp, status, err
 	}
@@ -3036,7 +3067,7 @@ func (c *Client) Products(parameters ProductsRequest) (ProductsResponse, int, er
 
 	params, _ := query.Values(parameters)
 
-	data, status, err := c.GetRequest(fmt.Sprintf("/store/products?%s", params.Encode()))
+	data, status, err := c.GetRequest(fmt.Sprintf("/store/products?%s", params.Encode()), b)
 	if err.RuntimeErr != nil {
 		return resp, status, err
 	}
@@ -3080,7 +3111,7 @@ func (c *Client) ProductsProperties(parameters ProductsPropertiesRequest) (Produ
 
 	params, _ := query.Values(parameters)
 
-	data, status, err := c.GetRequest(fmt.Sprintf("/store/products/properties?%s", params.Encode()))
+	data, status, err := c.GetRequest(fmt.Sprintf("/store/products/properties?%s", params.Encode()), b)
 	if err.RuntimeErr != nil {
 		return resp, status, err
 	}
@@ -3124,7 +3155,7 @@ func (c *Client) Tasks(parameters TasksRequest) (TasksResponse, int, errs.Failur
 
 	params, _ := query.Values(parameters)
 
-	data, status, err := c.GetRequest(fmt.Sprintf("/tasks?%s", params.Encode()))
+	data, status, err := c.GetRequest(fmt.Sprintf("/tasks?%s", params.Encode()), b)
 	if err.RuntimeErr != nil {
 		return resp, status, err
 	}
@@ -3210,7 +3241,7 @@ func (c *Client) TaskCreate(task Task, site ...string) (CreateResponse, int, err
 func (c *Client) Task(id int) (TaskResponse, int, errs.Failure) {
 	var resp TaskResponse
 
-	data, status, err := c.GetRequest(fmt.Sprintf("/tasks/%d", id))
+	data, status, err := c.GetRequest(fmt.Sprintf("/tasks/%d", id), b)
 	if err.RuntimeErr != nil {
 		return resp, status, err
 	}
@@ -3296,7 +3327,7 @@ func (c *Client) UserGroups(parameters UserGroupsRequest) (UserGroupsResponse, i
 
 	params, _ := query.Values(parameters)
 
-	data, status, err := c.GetRequest(fmt.Sprintf("/user-groups?%s", params.Encode()))
+	data, status, err := c.GetRequest(fmt.Sprintf("/user-groups?%s", params.Encode()), b)
 	if err.RuntimeErr != nil {
 		return resp, status, err
 	}
@@ -3336,7 +3367,7 @@ func (c *Client) Users(parameters UsersRequest) (UsersResponse, int, errs.Failur
 
 	params, _ := query.Values(parameters)
 
-	data, status, err := c.GetRequest(fmt.Sprintf("/users?%s", params.Encode()))
+	data, status, err := c.GetRequest(fmt.Sprintf("/users?%s", params.Encode()), b)
 	if err.RuntimeErr != nil {
 		return resp, status, err
 	}
@@ -3374,7 +3405,7 @@ func (c *Client) Users(parameters UsersRequest) (UsersResponse, int, errs.Failur
 func (c *Client) User(id int) (UserResponse, int, errs.Failure) {
 	var resp UserResponse
 
-	data, status, err := c.GetRequest(fmt.Sprintf("/users/%d", id))
+	data, status, err := c.GetRequest(fmt.Sprintf("/users/%d", id), b)
 	if err.RuntimeErr != nil {
 		return resp, status, err
 	}
@@ -3432,7 +3463,7 @@ func (c *Client) UserStatus(id int, status string) (SuccessfulResponse, int, err
 func (c *Client) StaticticsUpdate() (SuccessfulResponse, int, errs.Failure) {
 	var resp SuccessfulResponse
 
-	data, status, err := c.GetRequest("/statistic/update")
+	data, status, err := c.GetRequest("/statistic/update", b)
 	if err.RuntimeErr != nil {
 		return resp, status, err
 	}
@@ -3477,7 +3508,7 @@ func (c *Client) Costs(costs CostsRequest) (CostsResponse, int, errs.Failure) {
 
 	params, _ := query.Values(costs)
 
-	data, status, err := c.GetRequest(fmt.Sprintf("/costs?%s", params.Encode()))
+	data, status, err := c.GetRequest(fmt.Sprintf("/costs?%s", params.Encode()), b)
 
 	if err.RuntimeErr != nil {
 		return resp, status, err
@@ -3663,7 +3694,7 @@ func (c *Client) CostsUpload(cost []CostRecord) (CostsUploadResponse, int, errs.
 func (c *Client) Cost(id int) (CostResponse, int, errs.Failure) {
 	var resp CostResponse
 
-	data, status, err := c.GetRequest(fmt.Sprintf("/costs/%d", id))
+	data, status, err := c.GetRequest(fmt.Sprintf("/costs/%d", id), b)
 
 	if err.RuntimeErr != nil {
 		return resp, status, err
@@ -3787,7 +3818,7 @@ func (c *Client) CustomFields(customFields CustomFieldsRequest) (CustomFieldsRes
 
 	params, _ := query.Values(customFields)
 
-	data, status, err := c.GetRequest(fmt.Sprintf("/custom-fields?%s", params.Encode()))
+	data, status, err := c.GetRequest(fmt.Sprintf("/custom-fields?%s", params.Encode()), b)
 
 	if err.RuntimeErr != nil {
 		return resp, status, err
@@ -3828,7 +3859,7 @@ func (c *Client) CustomDictionaries(customDictionaries CustomDictionariesRequest
 
 	params, _ := query.Values(customDictionaries)
 
-	data, status, err := c.GetRequest(fmt.Sprintf("/custom-fields/dictionaries?%s", params.Encode()))
+	data, status, err := c.GetRequest(fmt.Sprintf("/custom-fields/dictionaries?%s", params.Encode()), b)
 
 	if err.RuntimeErr != nil {
 		return resp, status, err
@@ -3917,7 +3948,7 @@ func (c *Client) CustomDictionariesCreate(customDictionary CustomDictionary) (Cu
 func (c *Client) CustomDictionary(code string) (CustomDictionaryResponse, int, errs.Failure) {
 	var resp CustomDictionaryResponse
 
-	data, status, err := c.GetRequest(fmt.Sprintf("/custom-fields/dictionaries/%s", code))
+	data, status, err := c.GetRequest(fmt.Sprintf("/custom-fields/dictionaries/%s", code), b)
 
 	if err.RuntimeErr != nil {
 		return resp, status, err
@@ -4052,7 +4083,7 @@ func (c *Client) CustomFieldsCreate(customFields CustomFields) (CustomResponse, 
 func (c *Client) CustomField(entity, code string) (CustomFieldResponse, int, errs.Failure) {
 	var resp CustomFieldResponse
 
-	data, status, err := c.GetRequest(fmt.Sprintf("/custom-fields/%s/%s", entity, code))
+	data, status, err := c.GetRequest(fmt.Sprintf("/custom-fields/%s/%s", entity, code), b)
 
 	if err.RuntimeErr != nil {
 		return resp, status, err
